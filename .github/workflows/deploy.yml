@@ -1,0 +1,73 @@
+name: CI/CD Frontend -> EKS
+
+on:
+  push:
+    branches:
+      - deploy   # ⚠️ Revisar con el enunciado oficial si debe ser "Deploy" (mayúscula)
+
+jobs:
+  build-push-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{ secrets.CLUSTER_NAME }} --region ${{ secrets.AWS_REGION }}
+
+      # El frontend es una SPA: Vite "hornea" las URLs de los backends dentro
+      # del bundle en tiempo de build. Por eso, antes de compilar, leemos los
+      # hostnames reales de los Network Load Balancer que ya publicaron los
+      # pipelines de back-ventas y back-despachos (deben correr al menos una
+      # vez antes que este, para que los Services existan).
+      - name: Obtener endpoints de los backends
+        id: backends
+        run: |
+          VENTAS_HOST=$(kubectl get svc back-ventas -n innovatech -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          DESPACHOS_HOST=$(kubectl get svc back-despachos -n innovatech -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          echo "ventas_url=http://${VENTAS_HOST}/api/v1/ventas" >> "$GITHUB_OUTPUT"
+          echo "despachos_url=http://${DESPACHOS_HOST}/api/v1/despachos" >> "$GITHUB_OUTPUT"
+
+      - name: Login Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+
+      - name: Build imagen frontend
+        run: |
+          docker build \
+            --build-arg VITE_API_VENTAS_URL=${{ steps.backends.outputs.ventas_url }} \
+            --build-arg VITE_API_DESPACHOS_URL=${{ steps.backends.outputs.despachos_url }} \
+            -t ${{ secrets.DOCKER_USERNAME }}/frontend-innovatech:${{ github.sha }} \
+            -t ${{ secrets.DOCKER_USERNAME }}/frontend-innovatech:latest \
+            -f dockerfile .
+
+      - name: Push imagen frontend
+        run: |
+          docker push ${{ secrets.DOCKER_USERNAME }}/frontend-innovatech:${{ github.sha }}
+          docker push ${{ secrets.DOCKER_USERNAME }}/frontend-innovatech:latest
+
+      - name: Crear/actualizar namespace
+        run: kubectl apply -f k8s/00-namespace.yaml
+
+      - name: Aplicar manifiestos (Deployment, Service, HPA)
+        run: kubectl apply -f k8s/30-frontend.yaml
+
+      - name: Actualizar imagen del Deployment (rolling update)
+        run: |
+          kubectl set image deployment/frontend \
+            frontend=${{ secrets.DOCKER_USERNAME }}/frontend-innovatech:${{ github.sha }} \
+            -n innovatech
+          kubectl rollout status deployment/frontend -n innovatech --timeout=180s
+
+      - name: Mostrar endpoint público (NLB)
+        run: kubectl get svc frontend -n innovatech

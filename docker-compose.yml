@@ -1,0 +1,7 @@
+services:
+  frontend:
+    image: juanjoelproxdlol/frontend-innovatech:latest
+    container_name: frontend-app
+    ports:
+      - "80:80"
+    restart: always
