@@ -20,7 +20,7 @@ export const PruebaCards = () => {
           }}
         />
         <CardComponent
-          title="Revisar Ordenes de pene 🚚"
+          title="Revisar Ordenes de ventas 🚚"
           description="Consulta los despachos realizados, modifica los registros de intentos o cierra la orden"
           buttonText="Consultar"
           onClick={() => {
